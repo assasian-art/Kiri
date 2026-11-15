@@ -33,6 +33,8 @@ mod engine;
 mod pipe;
 #[cfg(windows)]
 mod serve;
+#[cfg(any(windows, test))]
+mod wake;
 // A proxy on Windows' loopback, reached from WSL: relay.rs, over the
 // relay's frames shared with the WSL end.
 #[cfg(windows)]

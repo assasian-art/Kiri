@@ -4,9 +4,20 @@
 # to it over `kiri bridge`.
 export HOME=/var/lib/kiri-daemon
 mkdir -p "$HOME" /var/log
+# One at a time: kiri-win and `kiri` (crates/kiri/src/wsl.rs) can each
+# start it at once, and two would each remove the socket and start a
+# daemon. busybox flock has no time limit of its own: -n, tried for 10 s.
+exec 9>"$HOME/.kiri-start.lock"
+i=0
+until flock -n 9; do
+  [ "$i" -ge 100 ] && { echo "another kiri-start has not finished in 10 s" >&2; exit 1; }
+  sleep 0.1
+  i=$((i + 1))
+done
 pgrep -f '/usr/local/bin/kiri daemon' >/dev/null 2>&1 && exit 0
 rm -f "$HOME/.kiri/run/docker.sock"
-nohup /usr/local/bin/kiri daemon >>/var/log/kiri.log 2>&1 &
+# The daemon does not keep the lock (fd 9).
+nohup /usr/local/bin/kiri daemon >>/var/log/kiri.log 2>&1 9>&- &
 i=0
 while [ "$i" -lt 50 ]; do
   [ -S "$HOME/.kiri/run/docker.sock" ] && exit 0

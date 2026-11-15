@@ -267,41 +267,62 @@ fn wake() -> io::Result<()> {
     if r.ok() || r.status == 404 { Ok(()) } else { Err(io::Error::other(r.error())) }
 }
 
-/// Makes sure the daemon answers: Ubuntu uses the `kiri` systemd service;
-/// the small Kiri Linux distro starts /usr/local/bin/kiri-start instead.
+/// Makes sure the daemon answers, starting it if not: the same start the
+/// pipe makes when a docker command finds it gone (crate::wake), so the
+/// two never run at once.
 pub(crate) fn ensure_daemon() -> io::Result<()> {
-    if client::alive() {
-        return Ok(());
-    }
-    crate::serve::log("engine: not answering; starting it in WSL");
+    crate::serve::engine_ready().map_err(|why| io::Error::other(format!("Kiri's engine did not start: {why}")))
+}
+
+/// Starts the daemon in WSL and waits until `answers` (given how long it
+/// may take), all by `until`: each call into WSL is ended when it runs
+/// past it, the engine's sync included. Ubuntu uses the `kiri` systemd
+/// service; the small Kiri Linux distro starts /usr/local/bin/kiri-start
+/// instead.
+pub(crate) fn start_daemon(answers: impl Fn(Duration) -> bool, until: std::time::Instant) -> io::Result<()> {
+    use crate::wake::output_by;
+    use std::time::Instant;
+    let out_of_time = |doing: &str, e: &io::Error| io::Error::new(io::ErrorKind::TimedOut, format!("the start ran out of time {doing} ({e})"));
     // The engine this app installed, not one an update left behind.
-    match crate::update::sync_engine() {
+    match crate::update::sync_engine(until) {
         Ok(true) => crate::serve::log("engine: copied this version's engine into WSL"),
         Ok(false) => {}
+        // WSL itself hung: so would the start.
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => return Err(out_of_time("copying the engine into WSL", &e)),
         Err(e) => crate::serve::log(&format!("engine: could not copy the engine into WSL ({e}); starting the one there")),
     }
     let distro = distro();
-    let mut cmd = crate::win::tool("wsl.exe");
-    if let Some(d) = &distro {
-        cmd.args(["-d", d]);
-    }
-    std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000);
-    let started = cmd.args(["-u", "root", "--", "systemctl", "start", "kiri"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
-    if !started.is_ok_and(|s| s.success()) {
+    let wsl = |args: &[&str]| {
         let mut cmd = crate::win::tool("wsl.exe");
         if let Some(d) = &distro {
             cmd.args(["-d", d]);
         }
         std::os::windows::process::CommandExt::creation_flags(&mut cmd, 0x0800_0000);
-        let _ = cmd.args(["-u", "root", "--", "/usr/local/bin/kiri-start"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
-    }
-    for _ in 0..100 {
-        if client::alive() {
+        cmd.args(["-u", "root", "--"]).args(args).stdin(std::process::Stdio::null());
+        output_by(&mut cmd, until)
+    };
+    // What kiri-start (or WSL) said, for the error when it does not come up.
+    let said = match wsl(&["systemctl", "start", "kiri"]) {
+        Ok(o) if o.status.success() => None,
+        // WSL itself hung: kiri-start would too.
+        Err(e) if e.kind() == io::ErrorKind::TimedOut => return Err(out_of_time("starting the engine in WSL", &e)),
+        _ => match wsl(&["/usr/local/bin/kiri-start"]) {
+            Ok(o) if o.status.success() => None,
+            Ok(o) => Some(String::from_utf8_lossy(if o.stderr.is_empty() { &o.stdout } else { &o.stderr }).replace('\0', "").lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("kiri-start failed").to_owned()),
+            Err(e) if e.kind() == io::ErrorKind::TimedOut => return Err(out_of_time("starting the engine in WSL", &e)),
+            Err(e) => Some(format!("wsl.exe: {e}")),
+        },
+    };
+    // kiri-start waits for the socket itself: when it failed, a short wait.
+    let until = until.min(Instant::now() + Duration::from_secs(if said.is_some() { 2 } else { 10 }));
+    let left = || until.saturating_duration_since(Instant::now());
+    while !left().is_zero() {
+        if answers(left()) {
             return Ok(());
         }
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(left().min(Duration::from_millis(200)));
     }
-    Err(io::Error::other("Kiri's engine did not start in WSL: run contrib\\windows\\kiri.ps1 to install it"))
+    Err(io::Error::other(said.unwrap_or_else(|| "it did not answer in time after starting in WSL".into())))
 }
 
 /// `docker build` through Kiri, as on the Mac: BuildKit in a Kiri container

@@ -272,24 +272,23 @@ pub fn install_staged() -> io::Result<String> {
 /// binary). Running containers stop; those with a restart policy start again.
 pub fn restart_engine() -> io::Result<()> {
     let distro = crate::setup::saved_distro().ok_or_else(|| io::Error::other("Kiri's Linux is not set up"))?;
-    let kiri = crate::setup::to_wsl(&distro, &dir().join("kiri"))?;
-    let init = crate::setup::to_wsl(&distro, &dir().join("kiri-init"))?;
     // The pkill patterns spell "kiri" as "[k]iri": `sh -c` runs with this
     // whole script on its command line, and a plain pattern would match
     // that too and kill the shell before it starts the daemon again.
     let script = if distro == crate::setup::KIRI_DISTRO {
-        // Kiri Linux: busybox, no systemd; kiri-start starts the daemon.
-        format!(
-            "cp -f '{kiri}' /usr/local/bin/kiri.new && cp -f '{init}' /usr/local/bin/kiri-init.new && chmod 755 /usr/local/bin/kiri.new /usr/local/bin/kiri-init.new && mv -f /usr/local/bin/kiri.new /usr/local/bin/kiri && mv -f /usr/local/bin/kiri-init.new /usr/local/bin/kiri-init && pkill -f '/usr/local/bin/[k]iri daemon'; pkill -f '/usr/local/bin/[k]iri bridge'; sleep 1; /usr/local/bin/kiri-start"
-        )
+        // Kiri Linux: busybox, no systemd; kiri-start, this version's (put
+        // in with the engine), starts the daemon.
+        let win = |f: &str| dir().join(f).to_string_lossy().replace('\\', "/");
+        let copy = crate::wake::sync_script("/usr/local/bin", &win("kiri"), &win("kiri-init"), Some(crate::wake::KIRI_START));
+        format!("( {copy} ) >/dev/null || exit 1; pkill -f '/usr/local/bin/[k]iri daemon'; pkill -f '/usr/local/bin/[k]iri bridge'; sleep 1; /usr/local/bin/kiri-start")
     } else {
         // Ubuntu: install.sh installs the binaries and restarts the service.
         let install = crate::setup::to_wsl(&distro, &dir().join("install.sh"))?;
-        format!("sh '{install}' && pkill -f '/usr/local/bin/[k]iri bridge'; true")
+        format!("sh {} && pkill -f '/usr/local/bin/[k]iri bridge'; true", crate::wake::sh_quote(&install))
     };
     let mut cmd = crate::win::tool("wsl.exe");
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, CREATE_NO_WINDOW);
-    let out = cmd.args(["-d", &distro, "-u", "root", "--", "sh", "-c", &script]).stdin(Stdio::null()).output()?;
+    let out = cmd.args(crate::wake::wsl_sh(&distro, &script)).stdin(Stdio::null()).output()?;
     if !out.status.success() {
         return Err(io::Error::other(first_line(&out.stderr, "the engine did not restart")));
     }
@@ -580,28 +579,32 @@ pub fn restart_now() {
 /// declining "Restart engine" after an update left the old engine in WSL,
 /// and every later start (each login, each reboot) ran it again. Copying
 /// only: nothing running is stopped, so this is for an engine that isn't up.
-/// Returns whether anything was copied.
-pub fn sync_engine() -> io::Result<bool> {
+/// Returns whether anything was copied. One call into WSL, ended at
+/// `until`; none once it has made WSL's engine these binaries, until they
+/// change (an update installs new ones and starts a new kiri-win).
+pub fn sync_engine(until: Instant) -> io::Result<bool> {
+    static SYNCED: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
     let (kiri_src, init_src) = (dir().join("kiri"), dir().join("kiri-init"));
     if !kiri_src.is_file() || !init_src.is_file() {
         return Ok(false); // a development build run from elsewhere
     }
     let distro = crate::setup::saved_distro().ok_or_else(|| io::Error::other("Kiri's Linux is not set up"))?;
-    let kiri = crate::setup::to_wsl(&distro, &kiri_src)?;
-    let init = crate::setup::to_wsl(&distro, &init_src)?;
+    let stamp = |p: &Path| std::fs::metadata(p).map(|m| format!("{}:{:?}", m.len(), m.modified().ok())).unwrap_or_default();
+    let key = format!("{distro}|{}|{}", stamp(&kiri_src), stamp(&init_src));
+    if SYNCED.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_deref() == Some(&key) {
+        return Ok(false);
+    }
+    let win = |p: &Path| p.to_string_lossy().replace('\\', "/");
     // Both distros keep the engine in /usr/local/bin (kiri-start, install.sh).
-    let script = format!(
-        "c=0; for f in kiri kiri-init; do if [ $f = kiri ]; then s='{kiri}'; else s='{init}'; fi; \
-         cmp -s \"$s\" /usr/local/bin/$f && continue; \
-         cp -f \"$s\" /usr/local/bin/$f.new && chmod 755 /usr/local/bin/$f.new && mv -f /usr/local/bin/$f.new /usr/local/bin/$f && c=1; done; \
-         [ $c = 1 ] && echo copied; true"
-    );
+    let kiri_start = (distro == crate::setup::KIRI_DISTRO).then_some(crate::wake::KIRI_START);
+    let script = crate::wake::sync_script("/usr/local/bin", &win(&kiri_src), &win(&init_src), kiri_start);
     let mut cmd = crate::win::tool("wsl.exe");
     std::os::windows::process::CommandExt::creation_flags(&mut cmd, CREATE_NO_WINDOW);
-    let out = cmd.args(["-d", &distro, "-u", "root", "--", "sh", "-c", &script]).stdin(Stdio::null()).output()?;
+    let out = crate::wake::output_by(cmd.args(crate::wake::wsl_sh(&distro, &script)).stdin(Stdio::null()), until)?;
     if !out.status.success() {
         return Err(io::Error::other(first_line(&out.stderr, "could not copy the engine into WSL")));
     }
+    *SYNCED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(key);
     Ok(String::from_utf8_lossy(&out.stdout).contains("copied"))
 }
 
