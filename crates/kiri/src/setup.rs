@@ -642,17 +642,27 @@ fn zdotdir(home: &Path) -> PathBuf {
     std::env::var_os("ZDOTDIR").filter(|d| !d.is_empty()).map_or_else(|| home.to_path_buf(), PathBuf::from)
 }
 
+/// Puts ~/.kiri/bin on the shell's PATH in each profile. A profile that
+/// can't be written is passed over (and logged), not the end of setup: a
+/// link to a dotfiles folder that moved made the app's first launch quit
+/// with only "No such file or directory" (#250).
 fn shell_path(home: &Path, zdotdir: &Path) -> io::Result<()> {
     for (file, line) in profiles(home, zdotdir) {
+        // A link to nothing: writing through it would fail, or make the
+        // folder it points at. It stays as the user left it.
+        if file.symlink_metadata().is_ok() && !file.exists() {
+            crate::diag::warn!("shell profile skipped: a link to nothing", file = file.display());
+            continue;
+        }
         let text = std::fs::read_to_string(&file).unwrap_or_default();
         if text.contains(PROFILE_MARK) {
             continue;
         }
-        if let Some(dir) = file.parent() {
-            std::fs::create_dir_all(dir)?;
-        }
         let sep = if text.is_empty() || text.ends_with('\n') { "" } else { "\n" };
-        std::fs::write(&file, format!("{text}{sep}\n{PROFILE_MARK}\n{line}\n"))?;
+        let written = file.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| std::fs::write(&file, format!("{text}{sep}\n{PROFILE_MARK}\n{line}\n")));
+        if let Err(e) = written {
+            crate::diag::warn!("shell profile skipped", file = file.display(), error = e);
+        }
     }
     Ok(())
 }
@@ -945,6 +955,20 @@ mod tests {
     #[test]
     fn quotes_for_sh() {
         assert_eq!(super::sh_quote("/Users/o'neil/.kiri"), r"'/Users/o'\''neil/.kiri'");
+    }
+
+    // #250: a profile that is a link to nowhere (a dotfiles folder that
+    // moved) is passed over, not the end of the app's first launch.
+    #[test]
+    fn a_dangling_profile_link_does_not_stop_setup() {
+        let h = scratch("dangling");
+        std::os::unix::fs::symlink(h.join("dotfiles-gone/zshrc"), h.join(".zshrc")).unwrap();
+        super::shell_path(&h, &h).unwrap();
+        assert!(std::fs::read_link(h.join(".zshrc")).is_ok(), "the user's link stays a link");
+        assert!(!h.join("dotfiles-gone").exists(), "nothing made where it points");
+        assert!(std::fs::read_to_string(h.join(".zprofile")).unwrap().contains(super::PROFILE_MARK), "the other profiles still get the line");
+        super::remove_shell_path(&h, &h).unwrap();
+        let _ = std::fs::remove_dir_all(&h);
     }
 
     #[test]

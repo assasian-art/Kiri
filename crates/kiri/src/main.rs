@@ -191,7 +191,8 @@ fn main() -> ExitCode {
             // The subcommand only: arguments can carry values.
             #[cfg(unix)]
             if !e.to_string().starts_with("usage:") {
-                diag::warn!("command failed", command = args.first().filter(|a| a.len() <= 20 && a.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')).map_or("", String::as_str), error = e);
+                // Opened from Finder or the Dock there is none: "open" (#250).
+                diag::warn!("command failed", command = args.first().map_or(Some("open"), |a| (a.len() <= 20 && a.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')).then_some(a.as_str())).unwrap_or(""), error = e);
             }
             eprintln!("kiri: {e}");
             ExitCode::FAILURE
