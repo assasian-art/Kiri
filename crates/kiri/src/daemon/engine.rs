@@ -695,6 +695,8 @@ impl Engine {
         engine.start_sleeper();
         engine.start_clock();
         engine.start_k8s_lb();
+        #[cfg(target_os = "macos")]
+        super::watch::start(Arc::downgrade(&engine));
         Ok(engine)
     }
 
@@ -1256,6 +1258,29 @@ impl Engine {
     /// CPUs the VM has (or will boot with).
     pub fn cpus(&self) -> usize {
         self.cpus.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The Mac folders and files that running containers bind-mount, as
+    /// the Mac keeps them (the guest sees them under /mnt/mac).
+    #[cfg(target_os = "macos")]
+    pub fn mac_bind_sources(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .lock()
+            .containers
+            .values()
+            .filter(|c| c.status == Status::Running)
+            .flat_map(|c| c.spec.mounts.iter())
+            .filter_map(|m| m.split('\t').next()?.strip_prefix("/mnt/mac").filter(|p| p.starts_with('/')).map(str::to_owned))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The VM's link while it runs, without waking it.
+    #[cfg(target_os = "macos")]
+    pub fn awake_link(&self) -> Option<Arc<VmLink>> {
+        self.awake()
     }
 
     /// Whether the VM is running right now.

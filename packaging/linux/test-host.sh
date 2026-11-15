@@ -62,7 +62,14 @@ host_test() { # name full(0|1)
   userdel kiri-acl-other >/dev/null 2>&1
   check "and it gets in now, without signing in again" "setpriv --reuid=kiri-acl-test --regid=kiri-acl-test --clear-groups curl -fs --unix-socket /run/kiri/docker.sock http://kiri/_ping | grep -q OK"
   check "still in after the engine restarts" "systemctl restart kiri && for i in \$(seq 30); do [ -S /run/kiri/docker.sock ] && break; sleep 1; done; setpriv --reuid=kiri-acl-test --regid=kiri-acl-test --clear-groups curl -fs --unix-socket /run/kiri/docker.sock http://kiri/_ping | grep -q OK"
+  # The window's Restart engine after an upgrade: `kiri host-access --restart`
+  # (through pkexec) restarts a running engine, not only a dead one.
+  check "kiri host-access --restart restarts a running engine" "old=\$(systemctl show -p MainPID --value kiri) && /usr/bin/kiri host-access --restart kiri-acl-test && new=\$(systemctl show -p MainPID --value kiri) && [ \"\$new\" != 0 ] && [ \"\$new\" != \"\$old\" ] && curl -fs --unix-socket /run/kiri/docker.sock http://kiri/_ping | grep -q OK"
   userdel kiri-acl-test >/dev/null 2>&1
+  # An upgrade (here the same package again) restarts the running engine on
+  # the new binary, as the Mac and Windows apps do after an update.
+  if [ "$fmt" = deb ]; then upgrade="dpkg -i '$deb'"; else upgrade="dnf reinstall -y -q '$deb'"; fi
+  check "upgrading restarts the running engine" "old=\$(systemctl show -p MainPID --value kiri) && $upgrade >/dev/null && for i in \$(seq 30); do curl -fs --unix-socket /run/kiri/docker.sock http://kiri/_ping 2>/dev/null | grep -q OK && break; sleep 1; done; new=\$(systemctl show -p MainPID --value kiri) && [ \"\$new\" != 0 ] && [ \"\$new\" != \"\$old\" ]"
   check "/run/kiri is root 755 (RuntimeDirectory; the socket itself is 660 root:kiri)" "stat -c '%U %a' /run/kiri | grep -q '^root 755'"
   check "/var/lib/kiri is 710, not world-readable" "test \"\$(stat -c %a /var/lib/kiri)\" = 710"
   check "/var/lib/kiri-daemon (StateDirectory) exists" "test -d /var/lib/kiri-daemon"

@@ -32,6 +32,8 @@ mod usb;
 mod vmcpu;
 mod vmlink;
 mod volumes;
+#[cfg(target_os = "macos")]
+mod watch;
 
 use std::io;
 use std::os::unix::fs::PermissionsExt;

@@ -12,7 +12,7 @@ use kiri_proto::{Exited, MAX_OUTPUT_CHUNK, Msg, Stats, Stream};
 
 use super::container::{self, NetCtx, Paths, Process};
 use super::net::{self, Bridges, Dhcp};
-use super::{layers, meminfo, sys};
+use super::{fsnotify, layers, meminfo, sys};
 
 /// Input held for a process that is not reading yet. The host sends at most
 /// `INPUT_WINDOW` bytes beyond what `InputConsumed` acknowledged, so a
@@ -501,6 +501,10 @@ pub fn serve(mut conn: File, paths: &Paths) -> io::Result<()> {
                         dns.forget_bridge(bridge);
                         bridges.remove(bridge);
                     }
+                    continue;
+                }
+                Ok(Msg::FsEvents(lines)) => {
+                    fsnotify::raise(lines.iter());
                     continue;
                 }
                 Ok(Msg::Retain(keep)) => {
