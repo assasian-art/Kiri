@@ -44,6 +44,11 @@ t run "3." "docker run --rm alpine cat /etc/alpine-release"
 t internet "Example Domain" "docker run --rm alpine wget -qO- -T 10 http://example.com"
 t port "Welcome to nginx" "docker run -d --name web -p 18082:80 nginx:alpine >/dev/null; for i in \$(seq 40); do curl -s localhost:18082 && break; sleep 0.5; done"
 t exec "nginx version" "docker exec web nginx -v"
+# A copy into a created container, then its start, mounts the same upper
+# dir twice in a row: kernels with overlayfs index on (Arch) refused the
+# second with EBUSY (#227). A renamed directory must survive a commit.
+t cp-then-start "failed 0" "f=0; for i in 1 2 3 4 5; do id=\$(docker create alpine sleep 30); docker cp /etc/hostname \$id:/f >/dev/null 2>&1; docker start \$id >/dev/null 2>&1 || f=\$((f+1)); docker rm -f \$id >/dev/null; done; echo failed \$f"
+t commit-renamed-dir "kept" "id=\$(docker run -d alpine sh -c 'mv /etc/apk /etc/apk2; sleep 60'); sleep 2; docker commit \$id kiri-rename-test >/dev/null; docker rm -f \$id >/dev/null; docker run --rm kiri-rename-test sh -c 'test -f /etc/apk2/repositories && echo kept'; docker rmi kiri-rename-test >/dev/null"
 t network-dns "PONG" "docker network create wn >/dev/null 2>&1; docker run -d --name db --network wn redis:7-alpine >/dev/null; sleep 2; docker run --rm --network wn redis:7-alpine redis-cli -h db ping"
 t volume "kept" "docker run --rm -v wv:/d alpine sh -c 'echo kept > /d/f' && docker run --rm -v wv:/d alpine cat /d/f"
 t seccomp "Seccomp:	2" "docker run --rm alpine grep Seccomp: /proc/self/status"

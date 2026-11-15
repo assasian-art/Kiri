@@ -431,7 +431,15 @@ pub fn mount_rootfs(paths: &Paths, id: &str, image_layers: StrList<'_>) -> io::R
         }
         lower.push_str(layers::hex(digest)?);
     }
-    let opts = format!("lowerdir={lower},upperdir={},workdir={}", upper.display(), work.display());
+    // The options Docker's overlay2 driver mounts with, whatever the kernel's
+    // defaults (Arch, CachyOS and xanmod turn these on, #227):
+    // - index=off: with index on, a second mount of an upper dir still in
+    //   use fails with EBUSY, and a copy into a created container mounts it
+    //   while the last mount is still being let go.
+    // - redirect_dir=off, metacopy=off: `docker diff` and `commit` read the
+    //   upper dir as it is, so it must hold whole renamed directories and
+    //   whole files, not redirects or metadata-only copies.
+    let opts = format!("lowerdir={lower},upperdir={},workdir={},index=off,redirect_dir=off,metacopy=off", upper.display(), work.display());
     sys::mount(c"overlay", &sys::cstr(&rootfs)?, c"overlay", 0, Some(&CString::new(opts)?))?;
     Ok(rootfs)
 }

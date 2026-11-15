@@ -779,10 +779,14 @@ t commit "sha256:" $D commit -c 'CMD ["cat","/added"]' -c 'ENV KIRI=1' ren2 kiri
 t commit-runs "hi" $D run --rm kiri-test/committed:1
 t commit-env "KIRI=1" $D run --rm kiri-test/committed:1 env
 t commit-whiteout "gone" bash -c "$D run --rm kiri-test/committed:1 sh -c 'test -e /etc/motd || echo gone'"
+# A renamed directory survives a commit, and a copy straight before a start
+# mounts the upper dir twice in a row (overlayfs index, redirect_dir, #227).
+t commit-renamed-dir "kept" bash -c "id=\$($D run -d alpine sh -c 'mv /etc/apk /etc/apk2; sleep 60'); sleep 2; $D commit \$id kiri-test/renamed:1 >/dev/null; $D rm -f \$id >/dev/null; $D run --rm kiri-test/renamed:1 sh -c 'test -f /etc/apk2/repositories && echo kept'"
+t cp-then-start "failed 0" bash -c "f=0; for i in 1 2 3 4 5; do id=\$($D create alpine sleep 30); $D cp /etc/hosts \$id:/f >/dev/null 2>&1; $D start \$id >/dev/null 2>&1 || f=\$((f+1)); $D rm -f \$id >/dev/null; done; echo failed \$f"
 t history "docker commit" $D history kiri-test/committed:1
 t history-base "<missing>" $D history kiri-test/committed:1
 t commit-stopped "sha256:" bash -c "$D stop -t 1 ren2 >/dev/null && $D commit ren2 kiri-test/committed:2"
-$D rm -f ren2 >/dev/null; $D rmi kiri-test/committed:1 kiri-test/committed:2 >/dev/null 2>&1
+$D rm -f ren2 >/dev/null; $D rmi kiri-test/committed:1 kiri-test/committed:2 kiri-test/renamed:1 >/dev/null 2>&1
 
 section "network connect and disconnect"
 $D network create na >/dev/null; $D network create nb >/dev/null
