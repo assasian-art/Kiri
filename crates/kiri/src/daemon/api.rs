@@ -33,6 +33,10 @@ pub fn serve(stream: UnixStream, engine: Arc<Engine>) -> io::Result<()> {
             engine.touch();
         }
         match route(&req, &engine, &mut w, &mut r) {
+            // A client that sent Connection: close waits for EOF, not a
+            // byte count: stop serving after the answer (upstream issue #225,
+            // Testcontainers for .NET hung on a body-less 204).
+            Ok(Next::KeepAlive) if req.header("connection").is_some_and(|v| v.eq_ignore_ascii_case("close")) => return Ok(()),
             Ok(Next::KeepAlive) => {}
             Ok(Next::Close) => return Ok(()),
             Err(e) => {
