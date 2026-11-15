@@ -194,11 +194,34 @@ pub fn container(source: &str, name: &str) -> io::Result<()> {
     Ok(())
 }
 
+/// The engine to import from: the one named, or else the first that is
+/// running. A source that isn't answering gets a plain message instead of
+/// docker's "context not found" (#266). `running` is `sources()`'s list.
+fn pick(given: Option<&str>, running: &[Value]) -> io::Result<String> {
+    let up = |v: &&Value| v["running"] == true;
+    let label = |id: &str| running.iter().find(|v| v["id"] == id).and_then(|v| v["label"].as_str()).unwrap_or(id).to_owned();
+    match given {
+        Some(id) => {
+            known(id)?;
+            if running.iter().filter(up).any(|v| v["id"] == id) {
+                Ok(id.to_owned())
+            } else {
+                Err(io::Error::other(format!("{} isn't running here (no docker context \"{id}\" answering): start it and try again", label(id))))
+            }
+        }
+        None => running.iter().find(up).and_then(|v| v["id"].as_str()).map(str::to_owned).ok_or_else(|| {
+            let names: Vec<String> = running.iter().filter_map(|v| v["label"].as_str().map(str::to_owned)).collect();
+            io::Error::other(format!("nothing to import from: {} isn't running here", names.join(" or ")))
+        }),
+    }
+}
+
 /// `kiri import [orbstack|desktop-linux] [--list | image|volume|container NAME]`:
 /// one item, or every image, named volume and container Kiri lacks.
 pub fn run(args: &[String]) -> io::Result<()> {
     let words: Vec<&str> = args.iter().filter(|a| !a.starts_with('-')).map(String::as_str).collect();
-    let source = words.first().copied().unwrap_or("orbstack");
+    let source = pick(words.first().copied(), &sources())?;
+    let source = source.as_str();
     if let [_, kind, name] = words[..] {
         let r = match kind {
             "image" => image(source, name),
@@ -248,5 +271,22 @@ mod tests {
     fn anonymous_volumes() {
         assert!(super::anonymous(&"a1".repeat(32)));
         assert!(!super::anonymous("pgdata"));
+    }
+
+    // #266: a fresh machine with neither engine gets a plain answer, not
+    // docker's "context not found"; with no source named, the running one is
+    // used.
+    #[test]
+    fn picks_a_running_source() {
+        use serde_json::json;
+        let both_down = [json!({"id": "orbstack", "label": "OrbStack", "running": false}), json!({"id": "desktop-linux", "label": "Docker Desktop", "running": false})];
+        assert_eq!(super::pick(None, &both_down).unwrap_err().to_string(), "nothing to import from: OrbStack or Docker Desktop isn't running here");
+        let e = super::pick(Some("desktop-linux"), &both_down).unwrap_err().to_string();
+        assert!(e.starts_with("Docker Desktop isn't running here"), "{e}");
+        let desktop_up = [json!({"id": "orbstack", "label": "OrbStack", "running": false}), json!({"id": "desktop-linux", "label": "Docker Desktop", "running": true})];
+        assert_eq!(super::pick(None, &desktop_up).unwrap(), "desktop-linux");
+        assert_eq!(super::pick(Some("desktop-linux"), &desktop_up).unwrap(), "desktop-linux");
+        assert!(super::pick(Some("orbstack"), &desktop_up).is_err());
+        assert_eq!(super::pick(Some("podman"), &desktop_up).unwrap_err().to_string(), "unknown source podman");
     }
 }
