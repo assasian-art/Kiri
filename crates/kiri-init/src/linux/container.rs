@@ -407,6 +407,8 @@ pub fn mount_rootfs(paths: &Paths, id: &str, image_layers: StrList<'_>) -> io::R
     valid_id(id)?;
     let base = paths.containers.join(id);
     let (upper, work, rootfs) = (base.join("upper"), base.join("work"), base.join("rootfs"));
+    let _ = sys::umount_lazy(&rootfs);
+    let _ = fs::remove_dir_all(&work);
     for d in [&upper, &work, &rootfs] {
         fs::create_dir_all(d)?;
     }
@@ -614,13 +616,12 @@ pub fn sweep(paths: &Paths, cgroup: &std::path::Path) {
     let ids: Vec<String> = entries.flatten().filter_map(|e| e.file_name().into_string().ok()).filter(|id| valid_id(id).is_ok() && id.len() >= 12).collect();
     for id in &ids {
         let cg = cgroup.join(id);
-        if !cg.is_dir() {
-            continue;
+        if cg.is_dir() {
+            kill_cgroup(&cg);
+            remove_cgroup(&cg);
         }
-        kill_cgroup(&cg);
         let _ = sys::umount_lazy(&paths.containers.join(id).join("rootfs"));
         let _ = fs::remove_dir_all(PathBuf::from("/run/kiri").join(id));
-        remove_cgroup(&cg);
     }
     // Host-side veths are kv<9 characters of the id><4 hex digits>.
     let Ok(links) = fs::read_dir("/sys/class/net") else { return };

@@ -147,6 +147,10 @@ fn host_dirs() -> io::Result<container::Paths> {
     let paths = container::Paths { layers: root.join("layers"), containers: root.join("containers"), cgroup: host_cgroup()? };
     mkdir(&paths.layers, 0o700)?;
     mkdir(&paths.containers, 0o700)?;
+    if !volmount::mounted("/var/lib/kiri/containers") {
+        let _ = sys::mount(c"/var/lib/kiri/containers", c"/var/lib/kiri/containers", c"none", libc::MS_BIND | libc::MS_REC, None);
+    }
+    let _ = sys::remount(c"/var/lib/kiri/containers", libc::MS_PRIVATE | libc::MS_REC);
     // What an agent that died uncleanly left running: under the cgroup it
     // used (recorded below), and under this one.
     let record = root.join("agent.cgroup");
