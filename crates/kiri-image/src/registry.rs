@@ -639,6 +639,7 @@ impl Client {
                 cmd: run.cmd.unwrap_or_default(),
                 working_dir: run.working_dir.unwrap_or_default(),
                 user: run.user.unwrap_or_default(),
+                labels: run.labels.unwrap_or_default(),
             },
         };
         // The last moment a cancel can stop it: after this it is pulled.
@@ -1096,6 +1097,8 @@ struct ContainerConfig {
     working_dir: Option<String>,
     #[serde(rename = "User")]
     user: Option<String>,
+    #[serde(rename = "Labels", default)]
+    labels: Option<std::collections::BTreeMap<String, String>>,
 }
 
 /// A registry answers a name that doesn't exist with 401 (Docker Hub hides
